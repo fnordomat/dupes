@@ -1,0 +1,11 @@
+[package]
+name = "dupes"
+version = "0.1.0"
+authors = ["fnordomat <46D46D1246803312401472B5A7427E237B7908CA>"]
+edition = "2018"
+
+[dependencies]
+clap = "2.32.0"
+regex = "1"
+sha2 = "0.8.0"
+walkdir = "2"
