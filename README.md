@@ -2,7 +2,7 @@
 Find duplicate files by SHA256.
 
 ## Dependencies
-This program depends on crates: clap, regex, sha2, walkdir, libc
+This program depends on crates: clap, regex, sha2, walkdir, libc, serde, serde\_json
 
 ## Usage
 ```

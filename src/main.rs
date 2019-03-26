@@ -5,6 +5,7 @@
 extern crate clap;
 extern crate libc;
 extern crate regex;
+extern crate serde;
 extern crate sha2;
 extern crate walkdir;
 
@@ -19,9 +20,11 @@ use walkdir::{Result, WalkDir};
 
 fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
     directories: Vec<P>,
+    emit_json: bool,
     avoid_compare_if_larger_than: Option<u64>,
     ignore_sizes_below: Option<u64>,
     show_non_duplicates: bool,
+    always_hash: bool,
     exclude_path_regex: &Option<Regex>,
 ) -> io::Result<()> {
     let mut map: BTreeMap<u64, BTreeSet<_>> = BTreeMap::new();
@@ -31,12 +34,15 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
         None => true,
     };
 
+    let mut output_table : Vec<(std::string::String, u64, std::collections::BTreeSet<&std::path::PathBuf>)> = vec![];
+    let quiet = emit_json;
+
     for path in directories {
         'walking: for entry in WalkDir::new(path)
             .into_iter()
             .filter_entry(|e| {
                 (!e.file_type().is_dir())
-         // Do not descend into paths excluded by -e patterns
+                // Do not descend into paths excluded by -e patterns
                 || (e.path().to_str().map(&isMatchOK).unwrap_or(false))
             })
             .filter_map(Result::ok)
@@ -61,12 +67,12 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
         }
     }
 
-    for (size, set) in map.iter() {
+    'iterating : for (size, set) in map.iter() {
         if let Some(max_size) = &avoid_compare_if_larger_than {
             if size > max_size {
-                println!("{:} (avoiding disambiguation)", size);
+                if !quiet { println!("{:} (avoiding disambiguation)", size); }
                 for entry in set {
-                    println!("  {:}", entry.display());
+                    if !quiet { println!("  {:}", entry.display()); }
                 }
                 continue;
             }
@@ -75,67 +81,87 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
         let mut size_header_shown = false;
 
         if set.len() == 1 {
-            if show_non_duplicates {
+            if show_non_duplicates && !always_hash {
                 if !size_header_shown {
-                    println!("{:}", size);
+                    if !quiet { println!("{:}", size); }
                 }
                 for entry in set {
-                    println!("  {:}", entry.display());
+                    if !quiet { println!("  {:}", entry.display()); }
+                }
+
+                if emit_json {
+                    let mut bin = BTreeSet::new();
+                    bin.insert(set.iter().next().unwrap());
+                    output_table.push(("".to_string(), size.clone(), bin));
                 }
             }
-            continue;
-        } else {
-            let mut hashbins = BTreeMap::new();
-            for entry in set {
-                let maybe_f = std::fs::File::open(entry);
-                if let Ok(f) = maybe_f {
-                    let mut reader = BufReader::with_capacity(8192, f);
-                    let mut hasher = Sha256::default();
-                    'reading: loop {
-                        let consumed = match reader.fill_buf() {
-                            Ok(bytes) => {
-                                hasher.input(bytes);
-                                bytes.len()
+            if !always_hash {
+                continue 'iterating;
+            }
+        }
+
+        let mut hashbins = BTreeMap::new();
+        for entry in set {
+            let maybe_f = std::fs::File::open(entry);
+            if let Ok(f) = maybe_f {
+                let mut reader = BufReader::with_capacity(8192, f);
+                let mut hasher = Sha256::default();
+                'reading: loop {
+                    let consumed = match reader.fill_buf() {
+                        Ok(bytes) => {
+                            hasher.input(bytes);
+                            bytes.len()
+                        }
+                        Err(ref error) => {
+                            if !size_header_shown {
+                                if !quiet { println!("{:}", size); }
+                                size_header_shown = true;
                             }
-                            Err(ref error) => {
-                                if !size_header_shown {
-                                    println!("{:}", size);
-                                    size_header_shown = true;
-                                }
-                                println!(
-                                    "{:?} error reading file {:}",
-                                    error.kind(),
-                                    entry.display()
-                                );
-                                break 'reading;
-                            }
-                        };
-                        reader.consume(consumed);
-                        if consumed == 0 {
+                            if !quiet { println!(
+                                "{:?} error reading file {:}",
+                                error.kind(),
+                                entry.display()
+                            ); }
                             break 'reading;
                         }
+                    };
+                    reader.consume(consumed);
+                    if consumed == 0 {
+                        break 'reading;
                     }
-                    let hashvec = hasher.result();
-                    hashbins
-                        .entry(hashvec)
-                        .or_insert(BTreeSet::new())
-                        .insert(entry);
                 }
+                let hashvec = hasher.result();
+                hashbins
+                    .entry(hashvec)
+                    .or_insert(BTreeSet::new())
+                    .insert(entry);
             }
-            for (key, bin) in &hashbins {
-                if !show_non_duplicates && bin.len() == 1 {
-                    continue;
-                }
-                if !size_header_shown {
-                    println!("{:}", size);
-                    size_header_shown = true;
-                }
+        }
+        for (key, bin) in &hashbins {
+            if !show_non_duplicates && bin.len() == 1 {
+                continue;
+            }
+            if !size_header_shown {
+                if !quiet { println!("{:}", size); }
+                size_header_shown = true;
+            }
+            if !quiet {
                 println!("  {:X}", key);
                 for entry in bin {
                     println!("    {:}", entry.display());
                 }
             }
+
+            if emit_json {
+                output_table.push(
+                    (format!("{:X}", &key), size.clone(), bin.clone()));
+            }
         }
+    }
+
+    if emit_json {
+        let json = serde_json::to_string(&output_table)?;
+        println!("{}", json);
     }
 
     return Ok(());
@@ -161,6 +187,10 @@ fn main() {
              .short("S")
              .long("show-non-duplicates")
              .help("List also files that are unique"))
+        .arg(Arg::with_name("always_hash")
+             .short("A")
+             .long("always-hash")
+             .help("Always include the hash, even if there is only one file of that size (implies -a 0)"))
         .arg(Arg::with_name("ignore_smaller_than")
              .short("i")
              .long("ignore-smaller-than")
@@ -177,6 +207,10 @@ fn main() {
              .takes_value(true)
              .multiple(true)
              .help("Exclude part of path (glob)"))
+        .arg(Arg::with_name("emit_json")
+             .short("j")
+             .long("emit-json")
+             .help("Output in JSON format"))
         .get_matches();
 
     fn parseBytesNum(string: &str) -> Option<u64> {
@@ -203,6 +237,8 @@ fn main() {
         .map_or([].to_vec(), |x| x.collect());
 
     let show_non_duplicates = matches.occurrences_of("show_non_duplicates") > 0;
+    let always_hash = matches.occurrences_of("always_hash") > 0;
+    let emit_json = matches.occurrences_of("emit_json") > 0;
 
     let exclude_path_regex = if exclude_exprs.is_empty() {
         None
@@ -214,15 +250,17 @@ fn main() {
         .value_of("avoid_compare_if_larger_than")
         .map_or(Some(1024 * 1024 * 32), |x| parseBytesNum(x));
 
-    if avoid_compare_if_larger_than == Some(0) {
+    if avoid_compare_if_larger_than == Some(0) || always_hash {
         avoid_compare_if_larger_than = None
     }
 
     let _ = walk(
         mydirs,
+        emit_json,
         avoid_compare_if_larger_than,
         ignore_sizes_below,
         show_non_duplicates,
+        always_hash,
         &exclude_path_regex,
     );
 }
