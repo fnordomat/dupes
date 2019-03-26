@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 clap = "2.32.0"
+libc = "*"
 regex = "1"
 sha2 = "0.8.0"
 walkdir = "2"

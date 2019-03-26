@@ -3,6 +3,7 @@
 #![allow(non_snake_case)]
 
 extern crate clap;
+extern crate libc;
 extern crate regex;
 extern crate sha2;
 extern crate walkdir;
@@ -141,6 +142,11 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
 }
 
 fn main() {
+
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let matches = App::new("Dupes")
         .version("0.1.0")
         .author("fnordomat <GPG:46D46D1246803312401472B5A7427E237B7908CA>")
