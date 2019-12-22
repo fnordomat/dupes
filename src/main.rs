@@ -1,5 +1,4 @@
 #![feature(bufreader_seek_relative)]
-#![feature(bufreader_buffer)]
 #![allow(non_snake_case)]
 
 extern crate clap;
@@ -18,6 +17,82 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use walkdir::{Result, WalkDir};
 
+fn collect<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
+    directories: Vec<P>,
+    quiet: bool,
+    exclude_path_regex: &Option<Regex>,
+) -> BTreeMap<u64, BTreeSet<Vec<u8>>> {
+    let mut map: BTreeMap<u64, BTreeSet<_>> = BTreeMap::new();
+
+    let isMatchOK = |s: &str| match &exclude_path_regex {
+        Some(ex) => !ex.is_match(&s),
+        None => true,
+    };
+
+    for path in directories {
+        'walking: for entry in WalkDir::new(path)
+            .into_iter()
+            .filter_entry(|e| {
+                (!e.file_type().is_dir())
+                // Do not descend into paths excluded by -e patterns
+                || (e.path().to_str().map(&isMatchOK).unwrap_or(false))
+            })
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            // Exclude files whose pathname is matched by -e pattern
+            .filter(|e| e.path().to_str().map(&isMatchOK).unwrap_or(false))
+        {
+            match entry.metadata() {
+                Ok(m) => {
+                    // no size filter here, just want to exclude files like these
+                    map.entry(m.len())
+                        .or_insert(BTreeSet::new())
+                        .insert(entry.into_path());
+                }
+                Err(_e) => {}
+            }
+        }
+    }
+
+    let mut output_map = BTreeMap::new();
+
+    'iterating : for (size, set) in map.iter() {
+        let mut hashes = BTreeSet::new();
+        for entry in set {
+            let maybe_f = std::fs::File::open(entry);
+            if let Ok(f) = maybe_f {
+                let mut reader = BufReader::with_capacity(8192, f);
+                let mut hasher = Sha256::default();
+                'reading: loop {
+                    let consumed = match reader.fill_buf() {
+                        Ok(bytes) => {
+                            hasher.input(bytes);
+                            bytes.len()
+                        }
+                        Err(ref error) => {
+                            if !quiet { println!(
+                                "{:?} error reading file {:}",
+                                error.kind(),
+                                entry.display()
+                            ); }
+                            break 'reading;
+                        }
+                    };
+                    reader.consume(consumed);
+                    if consumed == 0 {
+                        break 'reading;
+                    }
+                }
+                let hashvec = hasher.result().as_slice().to_vec();
+                hashes.insert(hashvec);
+            }
+        }
+        output_map.insert(size.clone(), hashes);
+    }
+
+    return output_map;
+}
+
 fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
     directories: Vec<P>,
     emit_json: bool,
@@ -26,11 +101,14 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
     show_non_duplicates: bool,
     always_hash: bool,
     exclude_path_regex: &Option<Regex>,
+    exclude_size_hash: BTreeMap<u64, BTreeSet<Vec<u8>>>,
 ) -> io::Result<()> {
     let mut map: BTreeMap<u64, BTreeSet<_>> = BTreeMap::new();
 
     let isMatchOK = |s: &str| match &exclude_path_regex {
-        Some(ex) => !ex.is_match(&s),
+        Some(ex) => {
+            !ex.is_match(&s)
+        },
         None => true,
     };
 
@@ -103,6 +181,7 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
         let mut hashbins = BTreeMap::new();
         for entry in set {
             let maybe_f = std::fs::File::open(entry);
+            let excluded_hash_set = exclude_size_hash.get(size);
             if let Ok(f) = maybe_f {
                 let mut reader = BufReader::with_capacity(8192, f);
                 let mut hasher = Sha256::default();
@@ -131,10 +210,23 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
                     }
                 }
                 let hashvec = hasher.result();
-                hashbins
-                    .entry(hashvec)
-                    .or_insert(BTreeSet::new())
-                    .insert(entry);
+
+                // Exclude files present in excluded-files map at this stage:
+                let present_in_excluded = match excluded_hash_set {
+                    None => {false}
+                    Some(set) => {
+                        set.contains(&hashvec.as_slice().to_vec())
+                    }
+                };
+                
+                if !present_in_excluded {
+                    hashbins
+                        .entry(hashvec)
+                        .or_insert(BTreeSet::new())
+                        .insert(entry);
+                } else {
+                    // don't include it then.
+                }
             }
         }
         for (key, bin) in &hashbins {
@@ -174,7 +266,7 @@ fn main() {
     }
 
     let matches = App::new("Dupes")
-        .version("0.1.0")
+        .version("0.1.1")
         .author("fnordomat <GPG:46D46D1246803312401472B5A7427E237B7908CA>")
         .about("Finds duplicate files (according to SHA256)")
         .arg(Arg::with_name("dir")
@@ -182,7 +274,13 @@ fn main() {
              .long("dir")
              .takes_value(true)
              .multiple(true)
-             .help("Base directory"))
+             .help("Base directory (multiple instances possible)"))
+        .arg(Arg::with_name("anti_dir")
+             .short("D")
+             .long("anti_dir")
+             .takes_value(true)
+             .multiple(true)
+             .help("NEGATIVE directory (multiple instances possible) - don't list files that are present in one of the -D entries. Use this to find the difference between two sets of files (implies -A and -S)"))
         .arg(Arg::with_name("show_non_duplicates")
              .short("S")
              .long("show-non-duplicates")
@@ -206,7 +304,7 @@ fn main() {
              .long("exclude-path")
              .takes_value(true)
              .multiple(true)
-             .help("Exclude part of path (glob)"))
+             .help("Exclude part of path (glob); valid for both -d and -D"))
         .arg(Arg::with_name("emit_json")
              .short("j")
              .long("emit-json")
@@ -229,6 +327,9 @@ fn main() {
     let mydirs: Vec<&str> = matches
         .values_of("dir")
         .map_or(["."].to_vec(), |x| x.collect());
+    let myantidirs: Vec<&str> = matches
+        .values_of("anti_dir")
+        .map_or([].to_vec(), |x| x.collect());
     let ignore_sizes_below = matches
         .value_of("ignore_smaller_than")
         .map_or(None, |x| parseBytesNum(x));
@@ -236,8 +337,10 @@ fn main() {
         .values_of("exclude_path")
         .map_or([].to_vec(), |x| x.collect());
 
-    let show_non_duplicates = matches.occurrences_of("show_non_duplicates") > 0;
-    let always_hash = matches.occurrences_of("always_hash") > 0;
+    let show_non_duplicates = matches.occurrences_of("show_non_duplicates") > 0
+        || !myantidirs.is_empty();
+    let always_hash = matches.occurrences_of("always_hash") > 0
+        || !myantidirs.is_empty();
     let emit_json = matches.occurrences_of("emit_json") > 0;
 
     let exclude_path_regex = if exclude_exprs.is_empty() {
@@ -254,6 +357,14 @@ fn main() {
         avoid_compare_if_larger_than = None
     }
 
+    let quiet = emit_json; // may become an independent option in the future
+
+    let excluded_map : BTreeMap<u64, BTreeSet<Vec<u8>>> = collect(
+        myantidirs,
+        quiet,
+        &exclude_path_regex,
+    );
+
     let _ = walk(
         mydirs,
         emit_json,
@@ -262,5 +373,6 @@ fn main() {
         show_non_duplicates,
         always_hash,
         &exclude_path_regex,
+        excluded_map,
     );
 }

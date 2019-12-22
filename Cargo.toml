@@ -1,6 +1,6 @@
 [package]
 name = "dupes"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["fnordomat <46D46D1246803312401472B5A7427E237B7908CA>"]
 edition = "2018"
 
