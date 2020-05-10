@@ -304,7 +304,7 @@ fn main() {
              .long("exclude-path")
              .takes_value(true)
              .multiple(true)
-             .help("Exclude part of path (glob); valid for both -d and -D"))
+             .help("Exclude part of path (glob); applies to both -d and -D"))
         .arg(Arg::with_name("emit_json")
              .short("j")
              .long("emit-json")
