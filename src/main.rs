@@ -30,7 +30,7 @@ fn collect<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
     };
 
     for path in directories {
-        'walking: for entry in WalkDir::new(path)
+        for entry in WalkDir::new(path)
             .into_iter()
             .filter_entry(|e| {
                 (!e.file_type().is_dir())
@@ -46,7 +46,7 @@ fn collect<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
                 Ok(m) => {
                     // no size filter here, just want to exclude files like these
                     map.entry(m.len())
-                        .or_insert(BTreeSet::new())
+                        .or_insert_with(BTreeSet::new)
                         .insert(entry.into_path());
                 }
                 Err(_e) => {}
@@ -56,7 +56,7 @@ fn collect<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
 
     let mut output_map = BTreeMap::new();
 
-    'iterating : for (size, set) in map.iter() {
+    for (size, set) in map.iter() {
         let mut hashes = BTreeSet::new();
         for entry in set {
             let maybe_f = std::fs::File::open(entry);
@@ -87,10 +87,10 @@ fn collect<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
                 hashes.insert(hashvec);
             }
         }
-        output_map.insert(size.clone(), hashes);
+        output_map.insert(*size, hashes);
     }
 
-    return output_map;
+    output_map
 }
 
 fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
@@ -137,7 +137,7 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
                         }
                     }
                     map.entry(m.len())
-                        .or_insert(BTreeSet::new())
+                        .or_insert_with(BTreeSet::new)
                         .insert(entry.into_path());
                 }
                 Err(_e) => {}
@@ -170,7 +170,7 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
                 if emit_json {
                     let mut bin = BTreeSet::new();
                     bin.insert(set.iter().next().unwrap());
-                    output_table.push(("".to_string(), size.clone(), bin));
+                    output_table.push(("".to_string(), *size, bin));
                 }
             }
             if !always_hash {
@@ -222,7 +222,7 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
                 if !present_in_excluded {
                     hashbins
                         .entry(hashvec)
-                        .or_insert(BTreeSet::new())
+                        .or_insert_with(BTreeSet::new)
                         .insert(entry);
                 } else {
                     // don't include it then.
@@ -246,7 +246,7 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
 
             if emit_json {
                 output_table.push(
-                    (format!("{:X}", &key), size.clone(), bin.clone()));
+                    (format!("{:X}", &key), *size, bin.clone()));
             }
         }
     }
@@ -256,7 +256,7 @@ fn walk<P: AsRef<Path> + std::cmp::Eq + std::hash::Hash>(
         println!("{}", json);
     }
 
-    return Ok(());
+    Ok(())
 }
 
 fn main() {
@@ -321,7 +321,7 @@ fn main() {
             "T" => 1024 * 1024 * 1024 * 1024,
             _ => 1,
         };
-        return Some((&caps[1]).parse::<u64>().unwrap() * factor);
+        Some((&caps[1]).parse::<u64>().unwrap() * factor)
     };
 
     let mydirs: Vec<&str> = matches
@@ -332,7 +332,7 @@ fn main() {
         .map_or([].to_vec(), |x| x.collect());
     let ignore_sizes_below = matches
         .value_of("ignore_smaller_than")
-        .map_or(None, |x| parseBytesNum(x));
+        .and_then(|x| parseBytesNum(x));
     let exclude_exprs: Vec<&str> = matches
         .values_of("exclude_path")
         .map_or([].to_vec(), |x| x.collect());
