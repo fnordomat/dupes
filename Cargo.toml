@@ -1,14 +1,17 @@
 [package]
 name = "dupes"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["fnordomat <46D46D1246803312401472B5A7427E237B7908CA>"]
 edition = "2018"
 
 [dependencies]
-clap = "2.32.0"
-libc = "0.2.50"
-regex = "1"
-sha2 = "0.8.0"
-walkdir = "2"
-serde = "1.0.89"
-serde_json = "1.0.39"
+clap       = "2.33.1"
+libc       = "0.2.74"
+regex      = "1"
+walkdir    = "2"
+# ignore     = "0.4.16"
+sha2       = "0.9.1"
+serde      = "1.0.114"
+serde_json = "1.0.57"
+# num_cpus   = "1.13.0"
+anyhow     = "1.0.32"
